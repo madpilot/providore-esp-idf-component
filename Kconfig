@@ -8,16 +8,5 @@ menu "Providore"
   config SECURED_SHARED_KEY
     bool "Store Shared key securely"
     help
-      Burn the shared private key into eFuse for extra security (Requires ESP32-S2)
-
-  config DEVICE_ID
-    string "Device ID"
-    help
-      Device ID used to identify the device to Providore.    
-  
-  config SHARED_KEY
-    string "Shared private key"
-    help
-      Device specific shared private key. Maximum 32 characters.
-   
+      Burn the shared private key into eFuse for extra security (Requires ESP32-S2) 
 endmenu
