@@ -89,7 +89,7 @@ void generate_hmac_signature(char *buffer, size_t buffer_len, const char *method
   strcpy(buffer + strlen(buffer), expiry);
 }
 
-esp_err_t hmac_calculate(const void *message, size_t message_len, uint8_t *sig)
+esp_err_t hmac_calculate(const char *psk, const void *message, size_t message_len, uint8_t *sig)
 {
 #ifdef SECURED_SHARED_KEY
   return esp_hmac_calculate(ETS_EFUSE_BLOCK_KEY4, (const void *)&message, strlen(message), (uint8_t *)&sig);
@@ -98,14 +98,14 @@ esp_err_t hmac_calculate(const void *message, size_t message_len, uint8_t *sig)
   mbedtls_md_type_t md_type = MBEDTLS_MD_SHA256;
   mbedtls_md_init(&ctx);
   mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(md_type), 1);
-  mbedtls_md_hmac_starts(&ctx, (unsigned char *)CONFIG_SHARED_KEY, 32);
+  mbedtls_md_hmac_starts(&ctx, (unsigned char *)psk, strlen(psk));
   mbedtls_md_hmac_update(&ctx, (const unsigned char *)message, strlen(message));
   mbedtls_md_hmac_finish(&ctx, sig);
   return ESP_OK;
 #endif
 }
 
-void generate_hmac(char *buffer, size_t buffer_len, const char *device_id, const char *method, const char *path, const char *version, const char *created_at, const char *expiry)
+void generate_hmac(char *buffer, size_t buffer_len, const char *device_id, const char *psk, const char *method, const char *path, const char *version, const char *created_at, const char *expiry)
 {
   char sig[32];
   char signature[buffer_len - 21];
@@ -113,7 +113,7 @@ void generate_hmac(char *buffer, size_t buffer_len, const char *device_id, const
   memset(buffer, 0, sizeof(char) * buffer_len);
 
   generate_hmac_signature((char *)&signature, buffer_len - 21, method, path, version, created_at, expiry);
-  hmac_calculate((const void *)&signature, strlen(signature), (uint8_t *)&sig);
+  hmac_calculate(psk, (const void *)&signature, strlen(signature), (uint8_t *)&sig);
 
   char base64[48];
   size_t olen;
@@ -124,7 +124,7 @@ void generate_hmac(char *buffer, size_t buffer_len, const char *device_id, const
   strcpy(buffer + strlen(buffer), base64);
 }
 
-bool verify_message(request_context_t *context)
+bool verify_message(const char *psk, request_context_t *context)
 {
   uint buffer_len = context->response_len + 1 + ISO8601_DATE_LEN + 1 + ISO8601_DATE_LEN + 1;
   char buffer[buffer_len];
@@ -132,8 +132,9 @@ bool verify_message(request_context_t *context)
   char base64[48];
   size_t olen;
 
+  bzero(&buffer, buffer_len);
   snprintf((char *)buffer, buffer_len, "%s\n%s\n%s", context->response, context->created_at, context->expiry);
-  hmac_calculate((char *)buffer, strlen(buffer), (uint8_t *)&sig);
+  hmac_calculate(psk, (char *)buffer, strlen(buffer), (uint8_t *)&sig);
   mbedtls_base64_encode((unsigned char *)&base64, 48, &olen, (const unsigned char *)&sig, 32);
   return strncmp((const char *)base64, context->signature, SIGNATURE_LEN) == 0;
 }
@@ -146,9 +147,11 @@ void generate_iso8601_timestamp(time_t *time, char *output)
   strftime(output, ISO8601_DATE_LEN, "%FT%TZ", &input);
 }
 
-providore_err_t providore_get(const char *method, const char *path, const char *device_id, size_t output_max_len, const char *output, size_t *output_len)
+providore_err_t providore_get(const char *method, const char *path, const char *device_id, const char *psk, size_t output_max_len, const char *output, size_t *output_len)
 {
   request_context_t context;
+
+  bzero(output, output_max_len);
   bzero(&context, sizeof(context));
 
   time_t now = time(&now);
@@ -173,7 +176,7 @@ providore_err_t providore_get(const char *method, const char *path, const char *
 
   generate_iso8601_timestamp(&now, (char *)&created_at);
   generate_iso8601_timestamp(&until, (char *)&expiry);
-  generate_hmac((char *)&hmac, HMAC_BUFFER_LEN, device_id, method, path, FIRMWARE_VERSION, (char *)&created_at, (char *)&expiry);
+  generate_hmac((char *)&hmac, HMAC_BUFFER_LEN, device_id, psk, method, path, FIRMWARE_VERSION, (char *)&created_at, (char *)&expiry);
 
   esp_http_client_handle_t client = esp_http_client_init(&http_client_config);
   esp_http_client_set_header(client, "X-Firmware-Version", FIRMWARE_VERSION);
@@ -188,7 +191,7 @@ providore_err_t providore_get(const char *method, const char *path, const char *
   }
 
   esp_http_client_cleanup(client);
-  if (verify_message(&context))
+  if (verify_message(psk, &context))
   {
     return PROVIDORE_OK;
   }
@@ -198,9 +201,9 @@ providore_err_t providore_get(const char *method, const char *path, const char *
   }
 }
 
-providore_err_t providore_get_config(const char *device_id, size_t output_max_len, const char *output, size_t *output_len)
+providore_err_t providore_get_config(const char *device_id, const char *psk, size_t output_max_len, const char *output, size_t *output_len)
 {
-  return providore_get("GET", "/config", device_id, output_max_len, output, output_len);
+  return providore_get("GET", "/config", device_id, psk, output_max_len, output, output_len);
 }
 
 void providore_firmware_upgrade_task(void *arguments)
@@ -225,7 +228,7 @@ void providore_firmware_upgrade_task(void *arguments)
 
   generate_iso8601_timestamp(&now, (char *)&created_at);
   generate_iso8601_timestamp(&until, (char *)&expiry);
-  generate_hmac((char *)&hmac, HMAC_BUFFER_LEN, context->device_id, "GET", "/firmware", FIRMWARE_VERSION, (char *)&created_at, (char *)&expiry);
+  generate_hmac((char *)&hmac, HMAC_BUFFER_LEN, context->device_id, context->psk, "GET", "/firmware", FIRMWARE_VERSION, (char *)&created_at, (char *)&expiry);
 
   esp_http_client_handle_t client = esp_http_client_init(&http_client_config);
   esp_http_client_set_header(client, "X-Firmware-Version", FIRMWARE_VERSION);
@@ -244,12 +247,13 @@ void providore_firmware_upgrade_task(void *arguments)
 }
 
 ota_request_context_t context;
-providore_err_t providore_firmware_upgrade(const char *device_id)
+providore_err_t providore_firmware_upgrade(const char *device_id, const char *psk)
 {
   TaskHandle_t handle;
   bzero(&context, sizeof(context));
   context.ota_state = OTA_READY;
   context.device_id = device_id;
+  context.psk = psk;
   context.event_group = xEventGroupCreate();
 
   xTaskCreate(providore_firmware_upgrade_task, "firmware_upgrade", 8096, (void *)&context, 1, &handle);
@@ -269,7 +273,18 @@ bool providore_self_test_required()
   esp_err_t result = esp_ota_get_state_partition(partition, &state);
   if (result != ESP_OK)
   {
-    ESP_LOGE(TAG, "Unable to get partition state data. This is bad!");
+    switch (result)
+    {
+    case ESP_ERR_INVALID_ARG:
+      ESP_LOGE(TAG, "Partition on state argument was NULL");
+      return false;
+    case ESP_ERR_NOT_SUPPORTED:
+      ESP_LOGW(TAG, "Partition is not an OTA partition");
+      return false;
+    case ESP_ERR_NOT_FOUND:
+      ESP_LOGW(TAG, "Partition table does not have otadata or state was not found for given partition");
+      return false;
+    }
   }
   return state == ESP_OTA_IMG_PENDING_VERIFY;
 }

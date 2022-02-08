@@ -28,6 +28,7 @@ typedef struct _ota_request_context
   char expiry[ISO8601_DATE_LEN];
   char signature[SIGNATURE_LEN];
   char *device_id;
+  char *psk;
   EventGroupHandle_t event_group;
   esp_ota_handle_t ota_handle;
   ota_state_t ota_state;
